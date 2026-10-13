@@ -1,4 +1,6 @@
-#include <cstdio>
+#pragma once
+
+#include <cstddef>
 #include <cstring>
 
 typedef struct {
