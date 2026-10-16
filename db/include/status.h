@@ -3,7 +3,6 @@
 #include <string>
 #include <utility>
 
-#include "slice.h"
 
 enum class Code {
   Ok = 0,
@@ -11,10 +10,9 @@ enum class Code {
   Corruption = 2,
   NotSupported = 3,
   InvalidArgument = 4,
-  IOError = 5
+  IOError = 5,
+  EndOfFile = 6
 };
-
-
 
 struct [[nodiscard]] Status {
   Code code = Code::Ok;
@@ -47,6 +45,10 @@ inline Status status_ioerror(std::string msg) {
 
 inline bool is_ok(const Status& s) {
   return s.code == Code::Ok;
+}
+
+inline Status status_eof(std::string msg){
+  return { Code::EndOfFile, std::move(msg)};
 }
 
 std::string status_to_string(const Status& s);
