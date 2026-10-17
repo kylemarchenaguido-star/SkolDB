@@ -9,8 +9,9 @@ std::string status_to_string(const Status &s){
     case Code::NotFound:          name = "NotFound"; break;
     case Code::Corruption:        name = "Corruption"; break;
     case Code::NotSupported:      name = "NotSupported"; break;
-    case Code::InvalidArgument:   name = "IOError"; break;
+    case Code::InvalidArgument:   name = "InvalidArgument"; break;
     case Code::IOError:           name = "IOError"; break;
+    case Code::EndOfFile:         name = "EndOfFile"; break;
     default:                      name = "Unknown"; break;
   }
   return s.message.empty() ? name : name + ": " + s.message;
