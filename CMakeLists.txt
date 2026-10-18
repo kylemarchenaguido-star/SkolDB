@@ -17,6 +17,7 @@ endif()
 add_library(skoldb STATIC
   db/src/crc32.cpp
   db/src/status.cpp
+  db/src/file.cpp 
 )
 target_include_directories(skoldb PUBLIC db/include)
 

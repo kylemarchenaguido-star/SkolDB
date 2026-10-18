@@ -1,7 +1,6 @@
 #include <cassert>
 #include <cerrno>
 #include <cstddef>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
@@ -17,16 +16,22 @@ struct PosixFile {
 };
 
 static Status posix_read(File *ctx, void *buf, size_t count, off_t offset, size_t *n_read){
+  assert(ctx != nullptr);
+
   ssize_t bytes_read;
   
   auto *state = static_cast<struct PosixFile*>(ctx->state);
+  if (state == nullptr){
+    int err = errno;
+    return status_ioerror("Cannot read from file: " + std::generic_category().message(err));
+  }
   int raw_fd = state->fd;
   do {
     bytes_read = pread(raw_fd, buf, count, offset);
   } while (bytes_read < 0 && errno == EINTR);
 
-  int err = errno;
   if (bytes_read < 0){
+    int err = errno;
     *n_read = 0;
     return status_ioerror("pread failed at offset: " + std::to_string(offset) + ": " + std::generic_category().message(err));
   }
@@ -74,6 +79,11 @@ static Status posix_write(File *ctx, const void *buf, size_t count, off_t offset
   ssize_t bytes_written;
 
   auto *state = static_cast<struct PosixFile*>(ctx->state);
+  if (state == nullptr){
+    int err = errno;
+    return status_ioerror("Cannot read from file: " + std::generic_category().message(err));
+  }
+
   int raw_fd = state->fd;
 
   do {
@@ -175,6 +185,10 @@ static Status posix_fdatasync(File *ctx){
 static Status posix_ftruncate(File *ctx, off_t len){
   assert(ctx != nullptr);
   auto* state = static_cast<PosixFile*>(ctx->state);
+  if (state == nullptr){
+    int err = errno;
+    return status_ioerror("Cannot read from file: " + std::generic_category().message(err));
+  }
 
   int result;
   do {
@@ -189,11 +203,11 @@ static Status posix_ftruncate(File *ctx, off_t len){
   return status_ok();
 }
 
-static Status posix_size_fstat(File *ctx, size_t *n_size){
+static Status posix_size_fstat(File *ctx, off_t *n_size){
   assert(ctx != nullptr);
   auto *state = static_cast<struct PosixFile*>(ctx->state);
-  if (state == nullptr){
-    return status_ioerror("file is closed");
+  if (state == nullptr || n_size == nullptr){
+    return status_ioerror("file is close or n_size is null");
   }
 
   struct stat statbuf;
@@ -207,7 +221,38 @@ static Status posix_size_fstat(File *ctx, size_t *n_size){
     int err = errno;
     return status_ioerror("fstat failed: " + std::generic_category().message(err));
   }
-  statbuf.st_size = *n_size;
+  *n_size = statbuf.st_size;
+  return status_ok();
+}
+
+Status sync_dir(const char *path){
+  if (path == nullptr){
+    return status_invalidargument("Invalid path recieved.");
+  }
+
+  int fd;
+  do {
+    fd = open(path, O_RDONLY | O_DIRECTORY);
+  } while (fd < 0 && errno == EINTR);
+
+  if (fd < 0){
+    int err = errno;
+    close(fd);
+    return status_ioerror("Cannot open the directory: " + std::generic_category().message(err));
+  }
+
+  int sync_fd;
+  do {
+    sync_fd = fsync(fd);
+  } while (sync_fd < 0 && errno == EINTR);
+
+  if (sync_fd < 0){
+    int err =  errno;
+    close(fd);
+    return status_ioerror("Cannot sync this directory: " + std::generic_category().message(err));
+  }
+
+  close(fd);
   return status_ok();
 }
 
@@ -241,9 +286,11 @@ Status open_posix_file(const char *path, int flags, mode_t mode, File *out){
   out->read_at = posix_read;
   out->write_at = posix_write;
   out->close_file = posix_close;
+  out->fdatasync_file = posix_fdatasync;
+  out->ftruncate_file = posix_ftruncate;
+  out->size_file = posix_size_fstat;
 
   return status_ok();
 }
 
-// TO DO functions, fsync, ftruncate, size, sync_dir
 
