@@ -27,7 +27,7 @@ option(TESTING "Build tests" ${PROJECT_IS_TOP_LEVEL})
 if(TESTING)
   enable_testing()
 
-  foreach(name coding_test crc32_test)
+  foreach(name coding_test crc32_test fault_file_step4_test)
     add_executable(${name} db/tests/${name}.cpp)
     target_link_libraries(${name} PRIVATE skoldb)
     add_test(NAME ${name} COMMAND ${name})
