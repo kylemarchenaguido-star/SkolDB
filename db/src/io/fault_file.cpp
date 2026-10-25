@@ -1,8 +1,10 @@
 #include "file.h"
 #include "status.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <new>
 #include <random>
 #include <utility>
@@ -34,18 +36,96 @@ static Status usable(File *ctx, FaultFile **out){
   return status_ok();
 }
 
+static Status logical_size(FaultFile *st, off_t *out){
+  off_t size = 0;
+  Status s = st->inner->size_file(st->inner, &size);
+  if (!is_ok(s)) return s;
+  for (const PendingOp &op : st->pending){
+    if (op.type == PendingOp::Type::Write){
+      size = std::max(size, op.offset +  static_cast<off_t>(op.bytes.size()));
+    } else {
+      size = op.length;
+    }
+  }
+  *out = size;
+  return status_ok();
+}
+
+Status fault_power_loss(File *f){
+  assert(f != nullptr);
+  auto *st = static_cast<FaultFile *>(f->state);
+  if (st ==  nullptr) return status_ioerror("file is closed");
+  st->pending.clear();
+  st->crashed = true;
+  return status_ok();
+}
+
 static Status fault_read(struct File *ctx, void *buf, size_t count, off_t offset, size_t *n){
   FaultFile *st;
   Status s = usable(ctx, &st);
   if (!is_ok(s)){ return s; }
-  return st->inner->read_at(st->inner, buf, count, offset, n);
+  if (n == nullptr) return status_invalidargument("n is null");
+
+  off_t size = 0;
+  s = logical_size(st, &size);
+  if (!is_ok(s)) return s;
+  if (offset >= size){ *n = 0; return status_ok(); }
+  size_t want = std::min(count, static_cast<size_t>(size - offset));
+
+  memset(buf, 0, want);
+
+  size_t got = 0;
+  s = read_fully(st->inner, buf, want, offset, &got);
+  if (!is_ok(s) && s.code != Code::EndOfFile) return s;
+
+  off_t end = offset + static_cast<off_t>(want);
+  auto *out = static_cast<unsigned char *>(buf);
+
+  for (const PendingOp &op : st->pending){
+    if (op.type == PendingOp::Type::Truncate){
+      off_t from = std::max(op.length, offset);
+      if (from < end) memset(out + (from - offset), 0, static_cast<size_t>(end - from));
+    } else {
+      off_t op_end = op.offset + static_cast<off_t>(op.bytes.size());
+      off_t lo = std::max(op.offset, offset);
+      off_t hi = std::min(op_end, end);
+      if (lo < hi){
+        memcpy(out + (lo - offset), op.bytes.data() + (lo - op.offset), static_cast<size_t>(hi - lo));
+      }
+    }
+  }
+  *n = want;
+  return status_ok();
 }
 
 static Status fault_write(struct File *ctx, const void *buf, size_t count, off_t offset, size_t *n){
   FaultFile *st;
   Status s = usable(ctx, &st);
   if (!is_ok(s)){ return s; }
+  if (n == nullptr) return status_invalidargument("n is null");
+  *n = 0;
 
+  st->write_count++;
+
+  if (st->settings.fail_after_writes >= 0 && st->write_count > st->settings.fail_after_writes){
+    return status_ioerror("simulated write failure");
+  }
+
+  size_t max = st->settings.max_bytes_per_write;
+  if (max > 0 && count > max) count = max;
+
+  if (st->settings.crash_at_write >= 0 && st->write_count == st->settings.crash_at_write){
+    size_t half = count / 2;
+    if (half > 0){
+      size_t done = 0;
+      Status w = write_fully(st->inner, buf, half, offset, &done);
+      if (!is_ok(w)) return w;
+    }
+    st->pending.clear();
+    st->crashed = true;
+    return status_ioerror("simulated crash during write");
+  }
+  
   PendingOp op;
   op.type = PendingOp::Type::Write;
   op.offset = offset;
@@ -57,17 +137,33 @@ static Status fault_write(struct File *ctx, const void *buf, size_t count, off_t
   return status_ok();
 }
 
-static Status apply_pending(File *ctx){
-  FaultFile *st;
-  Status s = usable(ctx, &st);
-
+static Status apply_pending(FaultFile *st){
+  for (const PendingOp &op : st->pending){
+    if (op.type == PendingOp::Type::Write){
+      size_t done = 0;
+      Status s = write_fully(st->inner, op.bytes.data(), op.bytes.size(), op.offset, &done);
+      if (!is_ok(s)) return s;
+    } else {
+      Status s = st->inner->ftruncate_file(st->inner, op.length);
+      if (!is_ok(s)) return s;
+    }
+  }
+  return status_ok();
 }
 
-static Status fault_fdatasync(struct File *ctx){
+static Status fault_fdatasync(File *ctx){
   FaultFile *st;
   Status s = usable(ctx, &st);
   if (!is_ok(s)){ return s; }
-  return st->inner->fdatasync_file(st->inner);
+
+  s = apply_pending(st);
+  if (!is_ok(s)) return s;
+
+  s = st->inner->fdatasync_file(st->inner);
+  if (!is_ok(s)) return s;
+
+  st->pending.clear();
+  return status_ok();
 }
 
 static Status fault_ftruncate(struct File *ctx, off_t len){
